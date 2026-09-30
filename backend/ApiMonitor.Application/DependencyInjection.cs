@@ -14,6 +14,7 @@ public static class DependencyInjection
         services.AddValidatorsFromAssemblyContaining<EndpointRequestValidator>();
         services.AddScoped<EndpointService>();
         services.AddScoped<CheckService>();
+        services.AddScoped<StatisticsService>();
         return services;
     }
 }

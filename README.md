@@ -2,11 +2,12 @@
 
 Plataforma de monitoramento de APIs HTTP: cadastro de endpoints, verificações periódicas, latência, disponibilidade e dashboard. Especificação completa em [api-monitor-claude.md](api-monitor-claude.md).
 
-> **Status:** em desenvolvimento — CRUD de endpoints (PostgreSQL), worker de monitoramento e histórico de verificações (MongoDB) prontos. Próximos: dashboard React e estatísticas.
+> **Status:** em desenvolvimento — CRUD de endpoints (PostgreSQL), worker de monitoramento, histórico (MongoDB), estatísticas e dashboard React prontos. Próximos: testes de integração, health checks, Docker completo e GitLab CI.
 
 ## Stack
 
 - **Backend:** C# / ASP.NET Core 8, EF Core + PostgreSQL, MongoDB.Driver, BackgroundService, IHttpClientFactory, FluentValidation, Swagger, xUnit
+- **Frontend:** React 19, TypeScript, Vite, React Router, Axios, Recharts
 - **Infra:** Docker Compose
 
 ## Estrutura
@@ -18,6 +19,8 @@ backend/
 ├── ApiMonitor.Domain          # entidades e enums
 ├── ApiMonitor.Infrastructure  # EF Core (PostgreSQL), MongoDB, checker HTTP, MonitoringWorker
 └── ApiMonitor.Tests
+
+frontend/api-monitor-web/     # React + Vite (components, pages, services, hooks, utils)
 ```
 
 ## Executando localmente
@@ -29,7 +32,15 @@ docker compose up -d                                        # PostgreSQL :5437, 
 dotnet run --project backend/ApiMonitor.Api --launch-profile http
 ```
 
-Swagger: http://localhost:5277/swagger. Em Development as migrations são aplicadas no startup.
+Frontend (em outro terminal):
+
+```bash
+cd frontend/api-monitor-web
+npm install
+npm run dev
+```
+
+Dashboard: http://localhost:5173 (o Vite faz proxy de `/api` para a API). Swagger: http://localhost:5277/swagger. Em Development as migrations são aplicadas no startup.
 
 Variáveis do compose podem ser sobrescritas copiando `.env.example` para `.env`.
 
@@ -45,6 +56,8 @@ Variáveis do compose podem ser sobrescritas copiando `.env.example` para `.env`
 | DELETE | `/api/endpoints/{id}` | Remove (e apaga o histórico no MongoDB) |
 | POST | `/api/endpoints/{id}/check` | Verificação imediata |
 | GET | `/api/endpoints/{id}/checks?from=&to=&page=1&pageSize=50` | Histórico paginado, mais recentes primeiro |
+| GET | `/api/endpoints/{id}/statistics?period=24h\|7d\|30d` | Uptime, latência (média/mín/máx) e série temporal |
+| GET | `/api/dashboard` | Totais, métricas das últimas 24h e resumo por endpoint |
 
 Erros seguem `ProblemDetails` (RFC 7807). Regras de validação: URL http/https absoluta, `intervalSeconds` 10–86400, `timeoutMilliseconds` 100–60000 e não maior que o intervalo, `expectedStatusCode` 100–599.
 
@@ -57,6 +70,14 @@ Erros seguem `ProblemDetails` (RFC 7807). Regras de validação: URL http/https 
 5. Ao atingir `AlertFailureThreshold` falhas seguidas, um alerta é registrado em log (uma vez por incidente).
 
 URLs monitoradas não são logadas (query strings costumam carregar chaves).
+
+## Estatísticas
+
+Calculadas no MongoDB com um único `$group` (somatórios), e as métricas derivadas em `CheckAggregate` (código puro, testado sem banco):
+
+- **Uptime** = verificações com sucesso ÷ total. Sem verificações no período → `null` ("sem dados", não 0%).
+- **Latência** considera só verificações que receberam resposta HTTP; timeouts e erros de rede não distorcem a média.
+- **Série temporal** agrupada com `$dateTrunc`: 1 h (24h), 6 h (7d) e 1 dia (30d).
 
 ## Testes
 

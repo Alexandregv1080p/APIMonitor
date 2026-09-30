@@ -8,8 +8,15 @@ namespace ApiMonitor.Api.Controllers;
 [ApiController]
 [Route("api/endpoints")]
 [Produces("application/json")]
-public class EndpointsController(EndpointService service, CheckService checks) : ControllerBase
+public class EndpointsController(EndpointService service, CheckService checks, StatisticsService statistics) : ControllerBase
 {
+    /// <summary>Uptime, latência e série temporal. period: 24h (padrão), 7d ou 30d.</summary>
+    [HttpGet("{id:guid}/statistics")]
+    [ProducesResponseType(StatusCodes.Status400BadRequest, Type = typeof(ValidationProblemDetails))]
+    [ProducesResponseType(StatusCodes.Status404NotFound, Type = typeof(ProblemDetails))]
+    public Task<EndpointStatisticsResponse> Statistics(Guid id, [FromQuery] string? period, CancellationToken ct) =>
+        statistics.GetEndpointStatisticsAsync(id, period, ct);
+
     /// <summary>Dispara uma verificação imediata, fora do agendamento.</summary>
     [HttpPost("{id:guid}/check")]
     [ProducesResponseType(StatusCodes.Status404NotFound, Type = typeof(ProblemDetails))]

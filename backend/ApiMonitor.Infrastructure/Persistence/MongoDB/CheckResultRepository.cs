@@ -1,4 +1,5 @@
 using ApiMonitor.Application.Interfaces;
+using ApiMonitor.Application.Statistics;
 using ApiMonitor.Domain.Entities;
 using ApiMonitor.Domain.Enums;
 using MongoDB.Bson;
@@ -33,6 +34,71 @@ public class CheckResultRepository(IMongoCollection<CheckResultDocument> collect
 
     public Task DeleteByEndpointAsync(Guid endpointId, CancellationToken ct) =>
         collection.DeleteManyAsync(d => d.EndpointId == endpointId, ct);
+
+    public async Task<CheckAggregate> AggregateAsync(Guid endpointId, DateTime since, CancellationToken ct)
+    {
+        var rows = await RunGroupAsync(new BsonDocument("endpointId", new BsonBinaryData(endpointId, GuidRepresentation.Standard)),
+            since, groupKey: BsonNull.Value, ct);
+        return rows.Count == 0 ? CheckAggregate.Empty : ToAggregate(rows[0]);
+    }
+
+    public async Task<IReadOnlyList<(DateTime BucketStart, CheckAggregate Aggregate)>> AggregateSeriesAsync(
+        Guid endpointId, DateTime since, TimeSpan bucket, CancellationToken ct)
+    {
+        var (unit, binSize) = bucket.TotalHours % 24 == 0 ? ("day", (int)bucket.TotalDays) : ("hour", (int)bucket.TotalHours);
+        var key = new BsonDocument("$dateTrunc", new BsonDocument
+        {
+            { "date", "$checkedAt" }, { "unit", unit }, { "binSize", binSize }
+        });
+
+        var rows = await RunGroupAsync(new BsonDocument("endpointId", new BsonBinaryData(endpointId, GuidRepresentation.Standard)),
+            since, key, ct);
+        return rows
+            .Select(r => (r["_id"].ToUniversalTime(), ToAggregate(r)))
+            .OrderBy(r => r.Item1)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, CheckAggregate>> AggregateByEndpointAsync(DateTime since, CancellationToken ct)
+    {
+        var rows = await RunGroupAsync(new BsonDocument(), since, "$endpointId", ct);
+        return rows.ToDictionary(r => r["_id"].AsBsonBinaryData.ToGuid(GuidRepresentation.Standard), ToAggregate);
+    }
+
+    /// <summary>
+    /// Um único $group calcula os somatórios; percentuais e médias ficam em CheckAggregate.
+    /// Latência só conta verificações com resposta HTTP ($gt null exclui null e campo ausente).
+    /// </summary>
+    private Task<List<BsonDocument>> RunGroupAsync(BsonDocument match, DateTime since, BsonValue groupKey, CancellationToken ct)
+    {
+        match["checkedAt"] = new BsonDocument("$gte", ToUtc(since));
+        var responded = new BsonDocument("$gt", new BsonArray { "$statusCode", BsonNull.Value });
+        BsonDocument IfResponded(BsonValue then, BsonValue otherwise) =>
+            new("$cond", new BsonArray { responded, then, otherwise });
+
+        var group = new BsonDocument
+        {
+            { "_id", groupKey },
+            { "total", new BsonDocument("$sum", 1) },
+            { "successful", new BsonDocument("$sum", new BsonDocument("$cond", new BsonArray { "$success", 1, 0 })) },
+            { "responded", new BsonDocument("$sum", IfResponded(1, 0)) },
+            { "latencySum", new BsonDocument("$sum", IfResponded("$latencyMs", 0)) },
+            { "minLatency", new BsonDocument("$min", IfResponded("$latencyMs", BsonNull.Value)) },
+            { "maxLatency", new BsonDocument("$max", IfResponded("$latencyMs", BsonNull.Value)) }
+        };
+
+        return collection.Aggregate<BsonDocument>(
+            new BsonDocument[] { new("$match", match), new("$group", group) },
+            cancellationToken: ct).ToListAsync(ct);
+    }
+
+    private static CheckAggregate ToAggregate(BsonDocument r) => new(
+        r["total"].ToInt64(),
+        r["successful"].ToInt64(),
+        r["responded"].ToInt64(),
+        r["latencySum"].ToInt64(),
+        r["minLatency"].IsBsonNull ? null : r["minLatency"].ToInt64(),
+        r["maxLatency"].IsBsonNull ? null : r["maxLatency"].ToInt64());
 
     /// <summary>Índice que atende histórico e estatísticas: filtro por endpoint, ordenação por data.</summary>
     public static void EnsureIndexes(IMongoCollection<CheckResultDocument> collection) =>
