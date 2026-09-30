@@ -16,6 +16,8 @@ namespace ApiMonitor.Infrastructure.DependencyInjection;
 
 public static class InfrastructureServiceCollectionExtensions
 {
+    public const string ReadyTag = "ready";
+
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddDbContext<AppDbContext>(o => o.UseNpgsql(RequiredConnectionString(configuration, "Postgres")));
@@ -36,6 +38,11 @@ public static class InfrastructureServiceCollectionExtensions
         });
         services.AddSingleton<IEndpointChecker, HttpEndpointChecker>();
         services.AddHostedService<MonitoringWorker>();
+
+        // Tag "ready": dependências externas, consultadas só em /health/ready.
+        services.AddHealthChecks()
+            .AddDbContextCheck<AppDbContext>("postgresql", tags: [ReadyTag])
+            .AddCheck<MongoHealthCheck>("mongodb", tags: [ReadyTag], timeout: TimeSpan.FromSeconds(3));
 
         return services;
     }

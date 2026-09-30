@@ -1,0 +1,197 @@
+# Pipeline: build → testes unitários → integração → segurança → imagens Docker → deploy (futuro)
+
+stages:
+  - build
+  - test
+  - integration
+  - security
+  - docker
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never # evita pipeline duplicado (branch + MR)
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+  - template: Jobs/Dependency-Scanning.gitlab-ci.yml # só roda em planos com o recurso; os audits abaixo cobrem o gratuito
+  - template: Jobs/Container-Scanning.gitlab-ci.yml
+
+variables:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  NUGET_PACKAGES: "$CI_PROJECT_DIR/.nuget"
+  WEB_DIR: frontend/api-monitor-web
+  API_IMAGE: $CI_REGISTRY_IMAGE/api
+  WEB_IMAGE: $CI_REGISTRY_IMAGE/web
+
+# ---------- Bases ----------
+
+.dotnet:
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  cache:
+    key: nuget
+    paths: [.nuget/]
+  before_script:
+    - dotnet restore backend/ApiMonitor.sln
+
+.node:
+  image: node:20-alpine
+  cache:
+    key:
+      files: [frontend/api-monitor-web/package-lock.json]
+    paths: [.npm/]
+  before_script:
+    - cd "$WEB_DIR"
+    - npm ci --cache "$CI_PROJECT_DIR/.npm" --prefer-offline
+
+.docker:
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG
+
+# ---------- Build ----------
+
+backend:build:
+  extends: .dotnet
+  stage: build
+  script:
+    - dotnet build backend/ApiMonitor.sln --no-restore -c Release
+
+frontend:build:
+  extends: .node
+  stage: build
+  script:
+    - npm run lint
+    - npm run build
+  artifacts:
+    paths: [frontend/api-monitor-web/dist/]
+    expire_in: 1 week
+
+# ---------- Testes ----------
+
+backend:unit-tests:
+  extends: .dotnet
+  stage: test
+  needs: [backend:build]
+  script:
+    - >
+      dotnet test backend/ApiMonitor.sln --no-restore -c Release
+      --filter "Category!=Integration"
+      --logger "junit;LogFilePath=$CI_PROJECT_DIR/reports/backend-unit.xml"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/backend-unit.xml
+
+frontend:unit-tests:
+  extends: .node
+  stage: test
+  needs: [frontend:build]
+  script:
+    - npx vitest run --reporter=default --reporter=junit --outputFile="$CI_PROJECT_DIR/reports/frontend-unit.xml"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/frontend-unit.xml
+
+# Testcontainers sobe PostgreSQL e MongoDB via Docker-in-Docker (runner com privileged).
+backend:integration-tests:
+  extends: .dotnet
+  stage: integration
+  needs: [backend:unit-tests]
+  services:
+    - name: docker:27-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    TESTCONTAINERS_HOST_OVERRIDE: docker
+  script:
+    - >
+      dotnet test backend/ApiMonitor.sln --no-restore -c Release
+      --filter "Category=Integration"
+      --logger "junit;LogFilePath=$CI_PROJECT_DIR/reports/backend-integration.xml"
+  artifacts:
+    when: always
+    reports:
+      junit: reports/backend-integration.xml
+
+# ---------- Segurança ----------
+
+sast:
+  stage: security
+
+secret_detection:
+  stage: security
+
+dependency_scanning:
+  stage: security
+
+backend:vulnerable-packages:
+  extends: .dotnet
+  stage: security
+  needs: []
+  script:
+    - dotnet list backend/ApiMonitor.sln package --vulnerable --include-transitive | tee vulnerable.txt
+    - if grep -q "has the following vulnerable packages" vulnerable.txt; then exit 1; fi
+
+frontend:npm-audit:
+  extends: .node
+  stage: security
+  needs: []
+  script:
+    - npm audit --omit=dev --audit-level=high
+
+# ---------- Imagens ----------
+# Sempre identificadas pelo SHA do commit; "latest" só acompanha a branch padrão.
+
+docker:api:
+  extends: .docker
+  stage: docker
+  script:
+    - docker build -t "$API_IMAGE:$CI_COMMIT_SHA" backend
+    - docker push "$API_IMAGE:$CI_COMMIT_SHA"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker tag "$API_IMAGE:$CI_COMMIT_SHA" "$API_IMAGE:latest"
+        docker push "$API_IMAGE:latest"
+      fi
+
+docker:web:
+  extends: .docker
+  stage: docker
+  script:
+    - docker build -t "$WEB_IMAGE:$CI_COMMIT_SHA" "$WEB_DIR"
+    - docker push "$WEB_IMAGE:$CI_COMMIT_SHA"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker tag "$WEB_IMAGE:$CI_COMMIT_SHA" "$WEB_IMAGE:latest"
+        docker push "$WEB_IMAGE:latest"
+      fi
+
+container_scanning:
+  stage: docker
+  needs: [docker:api, docker:web]
+  rules:
+    - if: $CI_COMMIT_BRANCH || $CI_COMMIT_TAG # mesmas regras dos jobs de imagem
+  parallel:
+    matrix:
+      - CS_IMAGE: $API_IMAGE:$CI_COMMIT_SHA
+      - CS_IMAGE: $WEB_IMAGE:$CI_COMMIT_SHA
+
+# ---------- Deploy ----------
+# Estágio reservado: o deploy em cloud (Sprint 7) só entra depois do MVP estável.
+# As imagens publicadas acima ($API_IMAGE / $WEB_IMAGE :$CI_COMMIT_SHA) são o artefato de deploy.

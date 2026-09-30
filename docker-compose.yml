@@ -34,6 +34,34 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build: ./backend
+    image: apimonitor-api:local
+    container_name: apimonitor-api
+    environment:
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=apimonitor;Username=${POSTGRES_USER:-apimonitor};Password=${POSTGRES_PASSWORD:-apimonitor_dev}"
+      ConnectionStrings__Mongo: "mongodb://${MONGO_USER:-apimonitor}:${MONGO_PASSWORD:-apimonitor_dev}@mongodb:27017/apimonitor?authSource=admin"
+      Database__MigrateOnStartup: "true" # uma instância só; ver README para múltiplas réplicas
+      Swagger__Enabled: "true"
+    ports:
+      - "${API_PORT:-8095}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend/api-monitor-web
+    image: apimonitor-web:local
+    container_name: apimonitor-web
+    ports:
+      - "${WEB_PORT:-3400}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   mongo-data:
