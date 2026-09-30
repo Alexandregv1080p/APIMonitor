@@ -14,6 +14,7 @@ Projeto de portfólio: processamento assíncrono com `BackgroundService`, persis
 - Dashboard com status em tempo quase real, gráficos de latência e disponibilidade
 - Alerta (em log) após N falhas consecutivas
 - Health checks de liveness e readiness, logs estruturados, erros em `ProblemDetails`
+- Observabilidade com OpenTelemetry: métricas no Prometheus, painel no Grafana e traces no Jaeger
 
 ## Arquitetura
 
@@ -55,6 +56,7 @@ Calculadas no MongoDB com um único `$group` (somatórios); as métricas derivad
 | Frontend | React 19, TypeScript, Vite, React Router, Axios, Recharts |
 | Testes | xUnit, Testcontainers, WebApplicationFactory, Vitest |
 | Infra | Docker, Docker Compose, nginx, GitLab CI/CD |
+| Observabilidade | OpenTelemetry, Prometheus, Grafana, Jaeger |
 
 ```text
 backend/
@@ -108,6 +110,34 @@ npm run dev                                                         # http://loc
 
 O Vite faz proxy de `/api` para a API. Para criar uma migration: `dotnet tool restore` e
 `dotnet ef migrations add <Nome> -p backend/ApiMonitor.Infrastructure -s backend/ApiMonitor.Api -o Persistence/PostgreSQL/Migrations`.
+
+### Observabilidade (opcional)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+```
+
+| Serviço | URL |
+|---|---|
+| Grafana (painel "API Monitor" já provisionado) | http://localhost:3401 |
+| Prometheus | http://localhost:9096 |
+| Jaeger (traces) | http://localhost:16687 |
+| Métricas brutas | http://localhost:8095/metrics |
+
+Métricas próprias (`System.Diagnostics.Metrics`, exportadas pelo OpenTelemetry):
+
+| Métrica | Tipo | Descrição |
+|---|---|---|
+| `monitor_checks_total{outcome}` | counter | verificações executadas (success/failure) |
+| `monitor_checks_failed_total{error_type}` | counter | falhas por tipo (Timeout, DnsError, ConnectionError, UnexpectedStatusCode) |
+| `monitor_check_latency_milliseconds` | histogram | latência das verificações com resposta |
+| `monitor_http_status_total{status_code}` | counter | códigos HTTP recebidos |
+| `monitor_endpoints_up` / `monitor_endpoints_down` | gauge | endpoints ativos por status |
+| `monitor_worker_duration_milliseconds` | histogram | ciclo do worker (sobe quando a concorrência satura) |
+
+Além delas: métricas de HTTP do ASP.NET Core e do HttpClient e de runtime (.NET). Traces (ligados quando `OTEL_EXPORTER_OTLP_ENDPOINT` está definido) cobrem requisições à API, cada verificação (`monitoring.check`) com a chamada HTTP de saída e as queries do PostgreSQL. `/metrics` fica só na porta da API — o nginx do frontend não o publica.
+
+> **Grafana mostrando "No data" com o Prometheus coletando?** Provavelmente o relógio da VM do Docker está defasado em relação ao Windows (comum após suspensão ou reinício do Docker Desktop): as amostras ficam "no futuro" e a janela do navegador não as alcança. Compare `date -u` com `docker exec apimonitor-prometheus date -u`; `wsl --shutdown` e reabrir o Docker Desktop ressincroniza.
 
 ## API
 
@@ -172,5 +202,5 @@ Requer runner com Docker-in-Docker (`privileged`), como os shared runners do Git
 - Canais de alerta (e-mail, Slack, webhook) e configuração de alerta por endpoint
 - Autenticação (JWT)
 - Separar worker da API e distribuir verificações via fila (RabbitMQ / SQS)
-- OpenTelemetry + Prometheus + Grafana
+- Alertas do Prometheus (Alertmanager) e instrumentação do MongoDB nos traces
 - Deploy em cloud (ECS/App Runner, RDS, MongoDB Atlas) com Terraform

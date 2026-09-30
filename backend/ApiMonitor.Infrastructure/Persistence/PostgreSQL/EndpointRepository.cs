@@ -23,6 +23,16 @@ public class EndpointRepository(AppDbContext db) : IEndpointRepository
         return enabled.Where(e => e.IsDue(now)).Select(e => e.Id).ToList();
     }
 
+    public async Task<(int Up, int Down)> CountEnabledByStatusAsync(CancellationToken ct)
+    {
+        var counts = await db.Endpoints.Where(e => e.Enabled)
+            .GroupBy(e => e.LastStatus)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+        int Of(EndpointStatus s) => counts.FirstOrDefault(c => c.Status == s)?.Count ?? 0;
+        return (Of(EndpointStatus.Up), Of(EndpointStatus.Down));
+    }
+
     public Task<MonitoredEndpoint?> GetAsync(Guid id, CancellationToken ct) =>
         db.Endpoints.FirstOrDefaultAsync(e => e.Id == id, ct);
 

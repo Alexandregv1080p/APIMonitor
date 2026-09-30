@@ -1,0 +1,49 @@
+# Stack opcional de observabilidade. Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+
+services:
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317 # liga os traces
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: apimonitor-prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9096}:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: apimonitor-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true" # leitura sem login, só para demo local
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3401}:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.64.0
+    container_name: apimonitor-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_PORT:-16687}:16686"
+
+volumes:
+  prometheus-data:
+  grafana-data:

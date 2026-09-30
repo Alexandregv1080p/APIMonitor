@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using ApiMonitor.Application.DTOs;
+using ApiMonitor.Application.Observability;
 using ApiMonitor.Application.Interfaces;
 using ApiMonitor.Domain.Exceptions;
 using FluentValidation;
@@ -13,6 +15,7 @@ public class CheckService(
     IEndpointChecker checker,
     IValidator<CheckHistoryQuery> historyValidator,
     IOptions<MonitoringOptions> options,
+    MonitoringTelemetry telemetry,
     ILogger<CheckService> logger)
 {
     /// <summary>
@@ -21,13 +24,23 @@ public class CheckService(
     /// </summary>
     public async Task<CheckResultResponse?> RunCheckAsync(Guid endpointId, CancellationToken ct)
     {
+        // Span raiz nas verificações do worker; filho do request HTTP na verificação manual.
+        using var activity = MonitoringTelemetry.ActivitySource.StartActivity("monitoring.check");
+        activity?.SetTag("endpoint.id", endpointId);
+
         var endpoint = await endpoints.GetAsync(endpointId, ct);
         if (endpoint is null) return null;
+        activity?.SetTag("endpoint.name", endpoint.Name);
 
         // A URL fica fora dos logs: query strings de APIs de terceiros costumam carregar chaves.
         logger.LogDebug("Monitoring check started for {EndpointId} ({EndpointName})", endpoint.Id, endpoint.Name);
 
         var result = await checker.CheckAsync(endpoint, ct);
+        telemetry.RecordCheck(result);
+        activity?.SetTag("http.response.status_code", result.StatusCode);
+        if (!result.Success)
+            activity?.SetStatus(ActivityStatusCode.Error, result.ErrorType?.ToString()).SetTag("error.type", result.ErrorType?.ToString());
+
         await results.AddAsync(result, ct);
 
         var previousStatus = endpoint.LastStatus;

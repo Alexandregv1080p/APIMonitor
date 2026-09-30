@@ -1,3 +1,4 @@
+using ApiMonitor.Application.Observability;
 using ApiMonitor.Application.Services;
 using ApiMonitor.Application.Validators;
 using FluentValidation;
@@ -15,6 +16,7 @@ public static class DependencyInjection
         services.AddScoped<EndpointService>();
         services.AddScoped<CheckService>();
         services.AddScoped<StatisticsService>();
+        services.AddSingleton<MonitoringTelemetry>();
         return services;
     }
 }

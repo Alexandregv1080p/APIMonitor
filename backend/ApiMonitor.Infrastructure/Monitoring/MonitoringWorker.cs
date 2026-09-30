@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using ApiMonitor.Application;
+using ApiMonitor.Application.Observability;
 using ApiMonitor.Application.Interfaces;
 using ApiMonitor.Application.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +20,7 @@ namespace ApiMonitor.Infrastructure.Monitoring;
 public class MonitoringWorker(
     IServiceScopeFactory scopeFactory,
     IOptions<MonitoringOptions> options,
+    MonitoringTelemetry telemetry,
     ILogger<MonitoringWorker> logger) : BackgroundService
 {
     private readonly ConcurrentDictionary<Guid, byte> _inFlight = new();
@@ -53,11 +56,16 @@ public class MonitoringWorker(
 
     private async Task DispatchDueChecksAsync(CancellationToken ct)
     {
+        var started = Stopwatch.GetTimestamp();
         IReadOnlyList<Guid> due;
         try
         {
             using var scope = scopeFactory.CreateScope();
-            due = await scope.ServiceProvider.GetRequiredService<IEndpointRepository>().ListDueIdsAsync(DateTime.UtcNow, ct);
+            var repository = scope.ServiceProvider.GetRequiredService<IEndpointRepository>();
+            due = await repository.ListDueIdsAsync(DateTime.UtcNow, ct);
+
+            var (up, down) = await repository.CountEnabledByStatusAsync(ct);
+            telemetry.SetEndpointCounts(up, down);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -72,6 +80,9 @@ public class MonitoringWorker(
             await _slots.WaitAsync(ct);
             _ = RunCheckAsync(id, ct);
         }
+
+        // Inclui a espera por vagas: ciclos longos indicam o limite de concorrência saturado.
+        telemetry.RecordWorkerCycle(Stopwatch.GetElapsedTime(started));
     }
 
     private async Task RunCheckAsync(Guid endpointId, CancellationToken ct)

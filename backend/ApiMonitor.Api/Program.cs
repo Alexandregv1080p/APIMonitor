@@ -29,6 +29,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddObservability(builder.Configuration);
 
 var app = builder.Build();
 
@@ -64,6 +65,9 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     Predicate = c => c.Tags.Contains(InfrastructureServiceCollectionExtensions.ReadyTag),
     ResponseWriter = HealthCheckResponseWriter.WriteAsync
 });
+
+// Scrape do Prometheus. Não é publicado pelo nginx do frontend: só acessível na porta da API / rede interna.
+app.MapPrometheusScrapingEndpoint();
 
 // ponytail: migração no startup serve para dev/compose com uma instância só.
 // Com várias réplicas, desligar a flag e aplicar via `dotnet ef migrations bundle` num job de deploy.
